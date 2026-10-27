@@ -1,96 +1,94 @@
-
-name: StudyEA - Extract and Build APK
+name: Build StudyEA APK from zip
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "studyea-palette.zip"
-      - ".github/workflows/build-apk.yml"
-    branches:
-      - main
-      - master
+    branches: [main, master]
+    paths: ['*.zip', '.github/workflows/**']
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Extract StudyEA and Build APK
     runs-on: ubuntu-latest
-
     steps:
-      - name: Download repository files
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check ZIP file
-        shell: bash
+      - name: Unzip the project (newest .zip in repo root)
         run: |
-          if [ ! -f "studyea-palette.zip" ]; then
-            echo "::error::studyea-palette.zip was not found in repository root."
+          ZIP=$(ls -t ./*.zip 2>/dev/null | head -n1)
+          if [ -z "$ZIP" ]; then
+            echo "::error::No .zip file found in the repository root."
             exit 1
           fi
-
-      - name: Extract project ZIP
-        shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y unzip
-          mkdir -p extracted
-          unzip -q studyea-palette.zip -d extracted
-
-          PUBSPEC="$(find extracted -type f -name pubspec.yaml -print -quit)"
-
-          if [ -z "$PUBSPEC" ]; then
-            echo "::error::pubspec.yaml was not found in the ZIP archive."
+          echo "Using $ZIP"
+          rm -rf app && mkdir app
+          unzip -q "$ZIP" -d app
+          PUB=$(find app -name pubspec.yaml | awk '{print length, $0}' | sort -n | head -n1 | cut -d' ' -f2-)
+          if [ -z "$PUB" ]; then
+            echo "::error::pubspec.yaml not found inside the zip."
             exit 1
           fi
+          DIR=$(dirname "$PUB")
+          echo "Project directory: $DIR"
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
 
-          PROJECT_DIR="$(dirname "$PUBSPEC")"
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Flutter project found at: $PROJECT_DIR"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Set up Flutter
+      - name: Install Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           cache: true
 
-      - name: Check Flutter version
-        run: flutter --version
+      - name: Generate Android project files if missing
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ ! -d android ]; then
+            flutter create --platforms=android --org app.studyea .
+          fi
+          rm -f test/widget_test.dart
 
-      - name: Install Flutter dependencies
+      - name: Prepare release signing key (optional)
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/studyea.jks"
+            {
+              echo "storePassword=$KEYSTORE_PASSWORD"
+              echo "keyPassword=$KEY_PASSWORD"
+              echo "keyAlias=$KEY_ALIAS"
+              echo "storeFile=$RUNNER_TEMP/studyea.jks"
+            } > android/key.properties
+          else
+            echo "::warning::No KEYSTORE_BASE64 secret; the APK is signed with a debug key and cannot update an installed copy."
+          fi
+
+      - name: Patch Android settings (minSdk, manifest, signing)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: python3 tools/patch_android.py
+
+      - name: Resolve packages
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
 
-      - name: Analyze project
+      - name: Analyze Dart sources
         working-directory: ${{ env.PROJECT_DIR }}
-        run: flutter analyze --no-pub
         continue-on-error: true
-
-      - name: Verify Android project
-        shell: bash
-        run: |
-          if [ ! -f "$PROJECT_DIR/android/gradlew" ]; then
-            echo "::error::Android Gradle wrapper not found."
-            exit 1
-          fi
+        run: flutter analyze --no-pub --no-fatal-infos
 
       - name: Build release APK
         working-directory: ${{ env.PROJECT_DIR }}
-        run: flutter build apk --release
+        run: flutter build apk --release --target-platform android-arm,android-arm64
 
-      - name: Upload APK artifact
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: StudyEA-Android-APK
+          name: studyea-release-apk
           path: ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 14
