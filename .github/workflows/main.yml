@@ -93,6 +93,41 @@ jobs:
                       print('   ', l.strip())
           PY
 
+      - name: Force compileSdk 36 on all plugin subprojects
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 - <<'PY'
+          import os
+          kts = 'android/build.gradle.kts'
+          grv = 'android/build.gradle'
+          if os.path.exists(kts):
+              fn = kts
+              block = '''subprojects {
+              afterEvaluate {
+                  (extensions.findByName("android") as? com.android.build.gradle.BaseExtension)?.compileSdkVersion(36)
+              }
+          }
+
+          '''
+          elif os.path.exists(grv):
+              fn = grv
+              block = '''subprojects {
+              afterEvaluate { p ->
+                  if (p.hasProperty('android')) {
+                      p.android.compileSdkVersion 36
+                  }
+              }
+          }
+
+          '''
+          else:
+              raise SystemExit('no root build.gradle found')
+          s = open(fn).read()
+          if 'compileSdkVersion(36)' not in s and 'compileSdkVersion 36' not in s:
+              open(fn, 'w').write(block + s)
+              print('patched', fn)
+          PY
+
       - name: Resolve packages
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
