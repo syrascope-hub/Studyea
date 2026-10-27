@@ -73,6 +73,26 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: python3 tools/patch_android.py
 
+      - name: Force SDK versions (compileSdk 36, minSdk 26)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          python3 - <<'PY'
+          import re, os
+          for fn in ['android/app/build.gradle.kts', 'android/app/build.gradle']:
+              if not os.path.exists(fn):
+                  continue
+              s = open(fn).read()
+              kts = fn.endswith('.kts')
+              eq = ' = ' if kts else ' '
+              s = re.sub(r'compileSdk(?:Version)?\s*=?\s*(?:flutter\.\w+|\d+)', 'compileSdk' + eq + '36', s)
+              s = re.sub(r'minSdk(?:Version)?\s*=?\s*(?:flutter\.\w+|\d+)', 'minSdk' + eq + '26', s)
+              open(fn, 'w').write(s)
+              print('patched', fn)
+              for l in s.splitlines():
+                  if re.search(r'compileSdk|minSdk|targetSdk', l):
+                      print('   ', l.strip())
+          PY
+
       - name: Resolve packages
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
